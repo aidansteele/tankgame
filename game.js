@@ -1,8 +1,85 @@
 import { WIDTH, HEIGHT, WORLD_FLOOR, weapons, makeTerrain, launch, stepShot, splitCluster, explode, collapseTerrain, settleTanks, breakRocks, stepRocks, cameraScale } from './physics.js';
+import { OnlineMatch, inviteURL, validCommand } from './multiplayer.js';
 const $ = id => document.getElementById(id), canvas = $('battle'), ctx = canvas.getContext('2d');
 const colors = ['#80d4c7', '#ffb17c'];
 let zoom = 1, cameraBottom = HEIGHT;
 let terrain, tanks, active, round, wind, shots = [], phase, settling, rocks = [], particles = [], rings = [], trail = [], timer = 0, generation = 0, sound = false, audio;
+let pendingShot = false, lastSnapshot = 0;
+const isOnline = () => $('mode').value === 'online';
+const isGuest = () => isOnline() && online.player === 1;
+const online = new OnlineMatch({
+  onStatus(message, failed = false) {
+    $('connection-status').textContent = message;
+    $('retry-online').hidden = !failed;
+    if (failed) $('invite-controls').hidden = true;
+  },
+  onInvite(id) {
+    $('invite-url').value = inviteURL(location.href, id);
+    $('invite-controls').hidden = false;
+  },
+  onReady(ready) {
+    if (ready && !isGuest()) reset();
+    if (!ready) { generation++; clearTimeout(timer); phase = 'waiting'; }
+    sync();
+    sendSnapshot();
+  },
+  onData(data) {
+    if (!isOnline() || !online.ready) return;
+    if (isGuest()) {
+      if (data?.type === 'state') receiveSnapshot(data);
+    } else if (validCommand(data, { generation, round, phase, active, tanks })) {
+      Object.assign(tanks[1], { angle: data.angle, power: data.power, weapon: data.weapon });
+      fire();
+      sendSnapshot();
+    }
+  }
+});
+
+function sendSnapshot() {
+  if (!isOnline() || isGuest() || !online.ready) return;
+  // Rubble has cyclic sleep groups. Send only its visual state; the host owns physics.
+  online.send({ type: 'state', generation, round, active, wind, phase,
+    terrain: terrain.map(y => Math.round(y * 10) / 10),
+    // BinaryPack cannot encode Infinity. Shell ammo is always unlimited.
+    tanks: tanks.map(t => ({ ...t, ammo: { ...t.ammo, shell: -1 } })),
+    shots, trail, rocks: rocks.map(({ x, y, angle, radius, shade }) => ({ x, y, angle, radius, shade })),
+    particles, rings, status: $('status').textContent,
+    winner: $('winner').textContent, description: $('result-description').textContent });
+}
+
+function receiveSnapshot(state) {
+  const sameTurn = generation === state.generation && round === state.round && active === state.active;
+  const aim = sameTurn && phase === 'aim' && active === 1 ? { angle: tanks[1].angle, power: tanks[1].power, weapon: tanks[1].weapon } : null;
+  if (!sameTurn || state.phase !== 'aim') pendingShot = false;
+  if (state.generation !== generation) { zoom = 1; cameraBottom = HEIGHT; }
+  if (state.phase === 'flight' && phase === 'aim') firingSound(state.tanks[state.active].weapon);
+  if (state.phase === 'settle' && phase === 'flight') firingSound(state.tanks[state.active].weapon, true);
+  ({ generation, round, active, wind, phase, terrain, tanks, shots, trail, rocks, particles, rings } = state);
+  for (const tank of tanks) tank.ammo.shell = Infinity;
+  if (aim && phase === 'aim') Object.assign(tanks[1], aim);
+  $('status').textContent = state.status;
+  $('result').hidden = phase !== 'over';
+  $('winner').textContent = state.winner;
+  $('result-description').textContent = state.description;
+  sync();
+}
+
+function startOnline() {
+  $('online-lobby').hidden = false;
+  $('invite-controls').hidden = true;
+  $('copy-invite').textContent = 'Copy link';
+  reset(); phase = 'waiting';
+  online.start(new URLSearchParams(location.hash.slice(1)).get('join'));
+  sync();
+}
+
+function requestFire() {
+  if (phase !== 'aim' || !isHuman() || pendingShot) return;
+  if (!isGuest()) { fire(); sendSnapshot(); return; }
+  const { angle, power, weapon } = tanks[active];
+  pendingShot = online.send({ type: 'fire', generation, round, angle, power, weapon });
+  sync();
+}
 let musicBus, backingBus, musicTimer, musicStep = 0, nextNote = 0, noise, accents = [];
 const sixteenth = 60 / 138 / 4;
 const progression = [45, 41, 48, 43]; // A minor / F / C / G, two bars each.
@@ -117,15 +194,19 @@ function firingSound(weapon, impact = false) {
 }
 
 document.addEventListener('visibilitychange', () => setSound(sound));
-function isHuman() { return active === 0 || $('mode').value === 'local'; }
+function isHuman() { return isOnline() ? online.ready && active === online.player : active === 0 || $('mode').value === 'local'; }
 function sync() {
   tanks.forEach((t, i) => { $('hp' + i).textContent = t.hp + ' HP'; $('bar' + i).style.width = t.hp + '%'; });
-  $('name0').textContent = $('mode').value === 'local' ? 'PLAYER 01' : 'YOU';
-  $('name1').textContent = $('mode').value === 'local' ? 'PLAYER 02' : 'THE RIVAL';
+  $('name0').textContent = isOnline() ? (online.player === 0 ? 'YOU' : 'PLAYER 01') : $('mode').value === 'local' ? 'PLAYER 01' : 'YOU';
+  $('name1').textContent = isOnline() ? (online.player === 1 ? 'YOU' : 'PLAYER 02') : $('mode').value === 'local' ? 'PLAYER 02' : 'THE RIVAL';
   $('round').textContent = 'ROUND ' + String(round).padStart(2, '0');
-  $('turn').textContent = phase === 'over' ? 'MATCH COMPLETE' : phase === 'flight' ? 'SHOT IN FLIGHT' : phase === 'settle' ? 'GROUND SETTLING' : isHuman() ? ($('mode').value === 'local' ? `PLAYER 0${active + 1}'S TURN` : 'YOUR TURN') : 'RIVAL AIMING';
+  $('turn').textContent = phase === 'waiting' ? 'WAITING FOR CONNECTION' : phase === 'over' ? 'MATCH COMPLETE' : phase === 'flight' ? 'SHOT IN FLIGHT' : phase === 'settle' ? 'GROUND SETTLING' : isHuman() ? ($('mode').value === 'local' ? `PLAYER 0${active + 1}'S TURN` : 'YOUR TURN') : 'RIVAL AIMING';
   $('wind').textContent = `WIND ${wind < 0 ? '←' : '→'} ${Math.abs(wind).toFixed(1)} M/S`;
-  for (const id of ['angle', 'power', 'weapon', 'fire']) $(id).disabled = phase !== 'aim' || !isHuman();
+  for (const id of ['angle', 'power', 'weapon', 'fire']) $(id).disabled = phase !== 'aim' || !isHuman() || pendingShot;
+  $('new').disabled = $('again').disabled = isOnline() && (isGuest() || !online.ready);
+  $('again').textContent = isGuest() ? 'Waiting for Player 01' : 'Another round ↗';
+  if (isOnline() && phase === 'aim') $('status').textContent = pendingShot ? 'Sending your shot…' : isHuman() ? 'Your turn. Read the wind, find your range.' : 'Your friend is lining up a shot…';
+  if (phase === 'waiting') $('status').textContent = 'Waiting for an online opponent. Choose another mode to play offline.';
   const t = tanks[active]; $('angle').value = t.angle; $('power').value = t.power;
   $('angle-value').textContent = t.angle + '°'; $('power-value').innerHTML = t.power + '<span>%</span>';
   for (const option of $('weapon').options) { option.textContent = `${weapons[option.value].name} · ${t.ammo[option.value] === Infinity ? '∞' : t.ammo[option.value]}`; option.disabled = !t.ammo[option.value]; }
@@ -133,6 +214,7 @@ function sync() {
 }
 function reset() {
   generation++; clearTimeout(timer); terrain = makeTerrain();
+  pendingShot = false;
   zoom = 1; cameraBottom = HEIGHT;
   accents = [];
   tanks = [220, 1180].map((x, i) => ({x, y:terrain[x], hp:100, angle:i ? 135 : 45, power:65, weapon:'shell', ammo:{shell:Infinity, heavy:3, quake:2, cluster:3, bunker:3}}));
@@ -175,14 +257,14 @@ function finishShot(shot) {
     settling = null;
     if (tanks.some(t => t.hp <= 0)) {
       phase = 'over'; $('result').hidden = false;
-      $('winner').textContent = tanks.every(t => t.hp <= 0) ? 'Mutual destruction.' : $('mode').value === 'local' ? `Player 0${tanks[0].hp > 0 ? 1 : 2} wins.` : tanks[0].hp > 0 ? 'Sweet victory.' : 'Outgunned. Not outdone.';
+      $('winner').textContent = tanks.every(t => t.hp <= 0) ? 'Mutual destruction.' : $('mode').value !== 'cpu' ? `Player 0${tanks[0].hp > 0 ? 1 : 2} wins.` : tanks[0].hp > 0 ? 'Sweet victory.' : 'Outgunned. Not outdone.';
       $('result-description').textContent = `${round} rounds. A thoroughly rearranged desert. Ready for another?`; sync(); return;
     }
     active = 1 - active; if (active === 0) round++;
     wind = Math.random() * 8 - 4; phase = 'aim';
     if (!tanks[active].ammo[tanks[active].weapon]) tanks[active].weapon = 'shell';
     $('status').textContent = isHuman() ? 'Your turn. Read the wind, find your range.' : 'The rival is lining up a shot…'; sync();
-    if (!isHuman()) timer = setTimeout(computerTurn, 900);
+    if ($('mode').value === 'cpu' && !isHuman()) timer = setTimeout(computerTurn, 900);
   }, settling.limit / 120 * 1000 + 400);
 }
 
@@ -210,7 +292,7 @@ function settleGround() {
   }
 }
 function computerTurn() {
-  if (phase !== 'aim' || isHuman()) return;
+  if ($('mode').value !== 'cpu' || phase !== 'aim' || isHuman()) return;
   const t = tanks[1]; let best = {distance:Infinity, angle:135, power:65};
   for (let angle = 100; angle <= 165; angle += 3) for (let power = 30; power <= 100; power += 2) {
     const s = launch(t, angle, power);
@@ -234,7 +316,7 @@ function drawTank(t, i) {
   if (active===i && phase==='aim'){ctx.fillStyle=colors[i];ctx.beginPath();ctx.moveTo(-4,-47);ctx.lineTo(4,-47);ctx.lineTo(0,-41);ctx.fill();}
   ctx.font='9px "DM Sans", sans-serif';ctx.textAlign='center';ctx.fillStyle=colors[i];ctx.fillText(i===0?'01 / NOMAD':'02 / BANDIT',0,29);ctx.restore();
 }
-function draw(dt) {
+function simulate(dt) {
   if (settling && settling.ticks < settling.limit) {
     settling.time += dt;
     while (settling.time >= 1 / 120 && settling.ticks < settling.limit) {
@@ -257,6 +339,9 @@ function draw(dt) {
       } else { shot.trail.push({x: shot.x, y: shot.y}); if (shot.trail.length > 90) shot.trail.shift(); }
     }
   }
+}
+function draw(dt) {
+  if (!isOnline() || (online.ready && !isGuest())) simulate(dt);
   const bottom = Math.max(HEIGHT, Math.max(...terrain) + 55);
   cameraBottom += (bottom - cameraBottom) * (1 - Math.exp(-6 * dt));
   const highest = shots.reduce((top, shot) => !top || shot.y + Math.min(0, shot.vy) * .2 < top.y + Math.min(0, top.vy) * .2 ? shot : top, null);
@@ -298,11 +383,37 @@ function draw(dt) {
 }
 // Build the arsenal from the same definitions used by the simulation.
 $('weapon').replaceChildren(...Object.entries(weapons).map(([key, weapon]) => new Option(weapon.name, key)));
-for(const id of ['angle','power']) $(id).addEventListener('input',()=>{tanks[active][id]=Number($(id).value);sync();});
-$('weapon').addEventListener('change',()=>{tanks[active].weapon=$('weapon').value;sync();});
-$('fire').onclick=()=>{if(isHuman())fire();};
-$('new').onclick=reset; $('again').onclick=reset; $('mode').onchange=reset;
+for(const id of ['angle','power']) $(id).addEventListener('input',()=>{if (phase !== 'aim' || !isHuman() || pendingShot) return; tanks[active][id]=Number($(id).value);sync();});
+$('weapon').addEventListener('change',()=>{if (phase !== 'aim' || !isHuman() || pendingShot) return; tanks[active].weapon=$('weapon').value;sync();});
+$('fire').onclick=requestFire;
+$('new').onclick=$('again').onclick=()=>{if (isOnline() && (isGuest() || !online.ready)) return; reset(); sendSnapshot();};
+$('mode').onchange=()=>{
+  online.stop();
+  history.replaceState(null, '', location.pathname + location.search);
+  $('online-lobby').hidden = !isOnline();
+  if (isOnline()) startOnline(); else reset();
+};
+$('retry-online').onclick=startOnline;
+$('copy-invite').onclick=async()=>{
+  try { await navigator.clipboard.writeText($('invite-url').value); $('copy-invite').textContent = 'Copied!'; }
+  catch { $('invite-url').focus(); $('invite-url').select(); $('copy-invite').textContent = 'Select & copy'; }
+};
 $('help').onclick=()=>$('instructions').showModal(); $('close-help').onclick=$('ready').onclick=()=>$('instructions').close();
 $('sound').onclick=()=>setSound(!sound);
-window.addEventListener('keydown',e=>{if($('instructions').open || phase!=='aim' || !isHuman() || /INPUT|SELECT|BUTTON/.test(document.activeElement.tagName))return;if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)){e.preventDefault();const t=tanks[active];if(e.key===' ')fire();else{if(e.key==='ArrowLeft')t.angle=Math.min(175,t.angle+1);if(e.key==='ArrowRight')t.angle=Math.max(5,t.angle-1);if(e.key==='ArrowUp')t.power=Math.min(100,t.power+1);if(e.key==='ArrowDown')t.power=Math.max(10,t.power-1);sync();}}});
-reset();let last=performance.now();function frame(now){draw(Math.min((now-last)/1000,.035));last=now;requestAnimationFrame(frame);}requestAnimationFrame(frame);
+window.addEventListener('keydown',e=>{if($('instructions').open || phase!=='aim' || !isHuman() || pendingShot || /INPUT|SELECT|BUTTON/.test(document.activeElement.tagName))return;if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)){e.preventDefault();const t=tanks[active];if(e.key===' ')requestFire();else{if(e.key==='ArrowLeft')t.angle=Math.min(175,t.angle+1);if(e.key==='ArrowRight')t.angle=Math.max(5,t.angle-1);if(e.key==='ArrowUp')t.power=Math.min(100,t.power+1);if(e.key==='ArrowDown')t.power=Math.max(10,t.power-1);sync();}}});
+window.addEventListener('pagehide', () => online.stop());
+window.addEventListener('hashchange', () => {
+  if (new URLSearchParams(location.hash.slice(1)).has('join')) {
+    online.stop(); $('mode').value = 'online'; startOnline();
+  } else if (isOnline()) {
+    $('mode').value = 'cpu'; $('mode').onchange();
+  }
+});
+if (new URLSearchParams(location.hash.slice(1)).has('join')) { $('mode').value = 'online'; startOnline(); } else reset();
+let last=performance.now();
+function frame(now){
+  draw(Math.min((now-last)/1000,.035));last=now;
+  if (now - lastSnapshot > 80) { sendSnapshot(); lastSnapshot = now; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);

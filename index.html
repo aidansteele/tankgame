@@ -25,7 +25,13 @@
 <body>
   <main>
     <header><a class="brand" href="./" aria-label="Afterburn home"><span class="brand-icon">⌁</span> AFTERBURN<span class="edition">ARTILLERY CLUB / EST. 1991*</span></a><div class="header-actions"><button id="sound" aria-pressed="false">Sound off</button><button id="help">How to play <span>↗</span></button><button id="new">New match <span>↻</span></button></div></header>
-    <section class="intro"><div><div class="eyebrow"><span class="live-dot"></span> THE CLASSICS NEVER DIE</div><h1>One more shot.</h1><p>A little calculation. A little destruction. Last tank standing.</p></div><label class="mode-label">PLAY YOUR WAY<select id="mode"><option value="cpu">Solo vs. computer</option><option value="local">Local two-player</option></select></label></section>
+    <section class="intro"><div><div class="eyebrow"><span class="live-dot"></span> THE CLASSICS NEVER DIE</div><h1>One more shot.</h1><p>A little calculation. A little destruction. Last tank standing.</p></div><label class="mode-label">PLAY YOUR WAY<select id="mode"><option value="cpu">Solo vs. computer</option><option value="local">Local two-player</option><option value="online">Online with a friend</option></select></label></section>
+    <section id="online-lobby" class="online-lobby" aria-label="Online match" hidden>
+      <div><span class="eyebrow">LONG-DISTANCE ARTILLERY</span><p id="connection-status" role="status" aria-live="polite">Creating your invite…</p></div>
+      <div id="invite-controls" class="invite-controls" hidden><label for="invite-url">PLAYER TWO'S INVITE</label><div><input id="invite-url" type="url" readonly><button id="copy-invite">Copy link</button></div></div>
+      <button id="retry-online" hidden>Try again</button>
+      <p class="connection-note">Keep both game tabs open. Direct browser-to-browser play via free PeerJS signaling; some networks may block connections. Only share your invite with your opponent.</p>
+    </section>
     <section class="arena" aria-label="Tank battlefield">
       <div class="match-hud"><div class="player teal"><div><span class="player-mark">01</span><strong id="name0">YOU</strong><span id="hp0">100 HP</span></div><div class="health"><i id="bar0"></i></div></div><div class="round"><span id="round">ROUND 01</span><strong id="turn">YOUR TURN</strong></div><div class="player orange"><div><span class="player-mark">02</span><strong id="name1">THE RIVAL</strong><span id="hp1">100 HP</span></div><div class="health"><i id="bar1"></i></div></div></div>
       <canvas id="battle" width="1400" height="620" aria-label="Desert battlefield. Adjust angle and power below, then fire."></canvas>
@@ -37,5 +43,6 @@
     <footer><span>OLD-SCHOOL PHYSICS. NEW-SCHOOL DAMAGE.</span><span>*A love letter to the artillery games of the ’90s.</span><span>BUILT FOR ONE MORE ROUND ↗</span></footer>
   </main>
   <dialog id="instructions"><button id="close-help" aria-label="Close instructions">×</button><div class="eyebrow">FIELD MANUAL / 001</div><h2>High stakes.<br>Higher trajectories.</h2><p>Take turns firing across the desert. Reduce your opponent’s health to zero to win.</p><ol><li><b>Set your elevation.</b> 45° points right; 135° points left. The dotted line previews the start of your shot.</li><li><b>Choose your power.</b> More power means more distance. Watch the wind—it changes every turn.</li><li><b>Make a crater.</b> Shells destroy terrain. Hits, nearby blasts, and long falls deal damage. Walls bounce shots back. The camera follows high arcs and deep craters.</li><li><b>Spend wisely.</b> Standard shells are unlimited. Each tank gets 3 heavy shells, 2 earthshakers, 3 cluster shells, and 3 bunker busters. Clusters release five bomblets at the apex; bunker busters dig narrow, deep craters along their impact direction.</li></ol><p>Use the sliders, or ← → to aim, ↑ ↓ for power, and Space to fire. Local two-player shares this keyboard.</p><button id="ready">Let's play ↗</button></dialog>
+  <script defer src="vendor/peerjs.min.js"></script>
   <script type="module" src="game.js"></script>
 </body></html>
